@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GrupQuiz</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<style>
+body{background:#0f172a;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.inp{width:100%;background:#0f172a;border:1px solid #334155;border-radius:.75rem;padding:.6rem .8rem;color:#f1f5f9;outline:none}
+.inp:focus{border-color:#6366f1}
+select.inp option{background:#0f172a}
+.btn{border-radius:.75rem;padding:.55rem 1rem;font-weight:600;transition:.15s}
+#flt::-webkit-scrollbar{display:none}
+</style>
+</head>
+<body class="text-slate-100 min-h-screen">
+<header class="sticky top-0 z-30 bg-slate-900/90 backdrop-blur border-b border-slate-800">
+ <div class="max-w-3xl mx-auto px-3 py-2 flex items-center justify-between gap-2">
+  <div class="flex items-center gap-2 font-extrabold text-lg"><i class="fa-solid fa-brain text-indigo-400"></i>GrupQuiz</div>
+  <div class="flex items-center gap-2 text-sm">
+   <button id="sh" onclick="adminLogin()" aria-label="Yönetici"><i class="fa-solid fa-shield-halved"></i></button>
+   <button onclick="fbModal()" class="btn bg-slate-800 hover:bg-slate-700 !px-3 !py-1.5"><i class="fa-solid fa-gear"></i><span class="hidden sm:inline"> Firebase Ayarları</span></button>
+   <div id="usr"></div>
+  </div>
+ </div>
+</header>
+<main class="max-w-3xl mx-auto px-3 py-4 space-y-4">
+ <div id="ann"></div><div id="trn"></div>
+ <div class="flex gap-2">
+  <button id="tq" onclick="setTab('q')"><i class="fa-solid fa-circle-question"></i> Sorular</button>
+  <button id="tb" onclick="setTab('b')"><i class="fa-solid fa-ranking-star"></i> Liderlik Tablosu</button>
+ </div>
+ <section id="vq" class="space-y-3">
+  <div id="flt" class="flex gap-2 overflow-x-auto"></div>
+  <button onclick="qModal()" class="btn w-full bg-indigo-600 hover:bg-indigo-500"><i class="fa-solid fa-plus"></i> Soru Ekle</button>
+  <div id="ql" class="space-y-3"></div>
+ </section>
+ <section id="vb" class="hidden"><div id="bd"></div></section>
+</main>
+<div id="ov" class="hidden fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 overflow-y-auto"><div id="mc" class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md p-5 my-auto"></div></div>
+<div id="ts" class="hidden"></div>
+
+<script>
+const CATS=['Genel Kültür','Dini Konular','Akademik'];
+const CC={'Genel Kültür':'bg-sky-500/20 text-sky-300','Dini Konular':'bg-emerald-500/20 text-emerald-300','Akademik':'bg-amber-500/20 text-amber-300'};
+const PTS=10,ADMIN_PW='1881253';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm=s=>String(s).toLocaleLowerCase('tr').trim().replace(/\s+/g,' ');
+const empty=t=>`<div class="text-center text-slate-500 py-10">${t}</div>`;
+let db=null,me=localStorage.getItem('gq_user'),admin=sessionStorage.getItem('gq_admin')==='1';
+let Q=[],S=[],ann='',trn=null,flt='Tümü',H={},editId=null,dl=new URLSearchParams(location.search).get('q');
+
+function toast(m,t='ok'){const e=$('ts');e.className='fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-xl text-sm font-semibold shadow-lg max-w-[90vw] text-center '+{ok:'bg-emerald-600',warn:'bg-amber-600',err:'bg-rose-600'}[t];e.textContent=m;clearTimeout(toast.t);toast.t=setTimeout(()=>e.className='hidden',2800)}
+const openM=(h,lock)=>{$('mc').innerHTML=h;$('ov').dataset.lock=lock?1:'';$('ov').classList.remove('hidden')};
+const closeM=()=>$('ov').classList.add('hidden');
+$('ov').onclick=e=>{if(e.target===$('ov')&&!$('ov').dataset.lock)closeM()};
+
+/* ---- Kullanıcı ---- */
+function nameModal(){openM(`<h2 class="text-xl font-bold mb-1">Kullanıcı Adını Belirle</h2><p class="text-slate-400 text-sm mb-4">Arkadaşların seni bu adla görecek.</p><input id="nm" maxlength="20" class="inp mb-3" placeholder="Kullanıcı adın" onkeydown="if(event.key==='Enter')saveName()"><button onclick="saveName()" class="btn w-full bg-indigo-600 hover:bg-indigo-500">Başla</button>`,1);setTimeout(()=>$('nm').focus(),50)}
+function saveName(){const v=$('nm').value.trim();if(v.length<2)return toast('En az 2 karakter gir','warn');me=v;localStorage.setItem('gq_user',v);closeM();renderAll()}
+function logout(){localStorage.removeItem('gq_user');sessionStorage.removeItem('gq_admin');me=null;admin=false;renderAll();nameModal()}
+
+/* ---- Firebase ---- */
+function fbModal(){openM(`<h2 class="text-xl font-bold mb-1">Firebase Ayarları</h2><p class="text-xs text-slate-400 mb-3">Firebase Console → Proje Ayarları → Web uygulaması bölümündeki firebaseConfig nesnesini yapıştır.</p><textarea id="fbc" rows="8" class="inp font-mono text-xs mb-3" placeholder='{ apiKey: "...", authDomain: "...", projectId: "...", storageBucket: "...", messagingSenderId: "...", appId: "..." }'>${esc(localStorage.getItem('gq_fb')||'')}</textarea><div class="flex gap-2"><button onclick="saveFb()" class="btn flex-1 bg-indigo-600 hover:bg-indigo-500">Kaydet</button><button onclick="closeM()" class="btn bg-slate-700">Vazgeç</button></div>`)}
+function saveFb(){const o={};$('fbc').value.replace(/["']?(\w+)["']?\s*:\s*["']([^"']*)["']/g,(a,k,v)=>o[k]=v);if(!o.apiKey||!o.projectId)return toast('Config eksik: apiKey ve projectId gerekli','err');localStorage.setItem('gq_fb',JSON.stringify(o));location.reload()}
+function initFb(){
+ const c=localStorage.getItem('gq_fb');if(!c)return;
+ const er=e=>toast('Bağlantı hatası: '+(e.code||e.message),'err');
+ try{
+  firebase.initializeApp(JSON.parse(c));db=firebase.firestore();
+  db.collection('questions').onSnapshot(s=>{Q=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.toMillis?.()??9e15)-(a.createdAt?.toMillis?.()??9e15));renderQ();deepLink()},er);
+  db.collection('scores').onSnapshot(s=>{S=s.docs.map(d=>d.data()).sort((a,b)=>b.score-a.score);renderB()},er);
+  db.collection('meta').doc('announcement').onSnapshot(d=>{ann=d.exists?d.data().text:'';renderBanner()},er);
+  db.collection('meta').doc('tournament').onSnapshot(d=>{trn=d.exists?d.data():null;renderBanner()},er);
+ }catch(e){db=null;toast('Firebase başlatılamadı: config hatalı olabilir','err')}
+}
+
+/* ---- Arayüz ---- */
+function renderH(){
+ $('usr').innerHTML=me?`<div class="flex items-center gap-2 bg-slate-800 rounded-xl p-1"><span class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center font-bold">${esc(me[0].toLocaleUpperCase('tr'))}</span><span class="max-w-[90px] truncate font-medium">${esc(me)}</span><button onclick="logout()" title="Çıkış Yap" class="w-7 h-7 rounded-lg text-slate-400 hover:bg-rose-600 hover:text-white"><i class="fa-solid fa-power-off"></i></button></div>`:'';
+ $('sh').className=admin?'text-emerald-400 px-1':'opacity-10 hover:opacity-50 px-1';
+}
+function renderBanner(){
+ $('ann').innerHTML=ann?`<div class="bg-indigo-500/15 border border-indigo-500/40 rounded-xl p-3 text-sm flex gap-2"><i class="fa-solid fa-bullhorn text-indigo-400 mt-0.5"></i><span>${esc(ann)}</span></div>`:'';
+ const on=trn&&trn.active&&trn.endsAt>Date.now();
+ $('trn').innerHTML=on?`<div class="bg-gradient-to-r from-amber-500/20 to-rose-500/20 border border-amber-500/40 rounded-xl p-4 flex items-center justify-between gap-3"><div><div class="text-xs text-amber-300 font-semibold"><i class="fa-solid fa-trophy"></i> Aktif turnuva</div><div class="font-bold text-lg">${esc(trn.title)}</div></div><div id="cd" class="text-2xl font-mono font-bold"></div></div>`:'';
+ tick();
+}
+function tick(){const e=$('cd');if(!e||!trn)return;const r=trn.endsAt-Date.now();if(r<=0)return renderBanner();e.textContent=String(Math.floor(r/6e4)).padStart(2,'0')+':'+String(Math.floor(r%6e4/1e3)).padStart(2,'0')}
+setInterval(tick,1000);
+function setTab(t){$('vq').classList.toggle('hidden',t!=='q');$('vb').classList.toggle('hidden',t!=='b');['q','b'].forEach(k=>$('t'+k).className='btn flex-1 '+(k===t?'bg-indigo-600':'bg-slate-800 text-slate-400'))}
+function renderF(){$('flt').innerHTML=['Tümü',...CATS].map(c=>`<button onclick="flt='${c}';renderQ()" class="btn !py-1.5 text-sm whitespace-nowrap ${flt===c?'bg-indigo-600':'bg-slate-800 text-slate-400'}">${c}</button>`).join('')}
+function renderQ(){
+ renderF();
+ const keep={};document.querySelectorAll('[data-oa]').forEach(i=>keep[i.dataset.oa]=i.value);
+ const L=Q.filter(q=>flt==='Tümü'||q.cat===flt);
+ $('ql').innerHTML=!db?empty('Önce Firebase ayarlarını yap: sağ üstteki dişli butonuna bas.'):L.length?L.map(card).join(''):empty('Bu kategoride soru yok. İlk soruyu sen ekle!');
+ for(const k in keep){const i=document.querySelector(`[data-oa="${k}"]`);if(i)i.value=keep[k]}
+}
+function card(q){
+ const id=q.id,solved=(q.solvedBy||[]).includes(me),own=q.author===me;
+ const body=q.type==='mc'
+  ?`<div class="grid gap-2">${(q.options||[]).map((o,i)=>`<button onclick="ans('${id}',${i})" class="text-left bg-slate-900 hover:bg-slate-700 border border-slate-700 rounded-xl px-3 py-2.5"><b class="text-indigo-400 mr-2">${'ABCDEF'[i]}</b>${esc(o)}</button>`).join('')}</div>`
+  :`<div class="flex gap-2"><input data-oa="${id}" class="inp" placeholder="Cevabını yaz" onkeydown="if(event.key==='Enter')ans('${id}',this.value)"><button onclick="ans('${id}',this.previousElementSibling.value)" class="btn bg-indigo-600 hover:bg-indigo-500">Gönder</button></div>`;
+ return `<article id="q-${id}" class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+ <div class="flex items-center justify-between gap-2 text-xs"><span class="px-2 py-1 rounded-lg font-semibold ${CC[q.cat]||''}">${esc(q.cat)}</span><span class="text-slate-400 truncate"><i class="fa-regular fa-user"></i> ${esc(q.author)} • ${(q.solvedBy||[]).length} kişi çözdü</span></div>
+ ${q.img?`<img src="${esc(q.img)}" class="rounded-xl max-h-64 w-full object-contain bg-slate-900" onerror="this.remove()">`:''}
+ <p class="font-semibold text-lg">${esc(q.text)}</p>
+ ${solved?'<div class="text-emerald-400 text-sm font-semibold"><i class="fa-solid fa-circle-check"></i> Bu soruyu çözdün</div>':''}
+ ${body}
+ ${q.hint?`<div><button onclick="H['${id}']=!H['${id}'];renderQ()" class="text-amber-400 text-sm"><i class="fa-regular fa-lightbulb"></i> İpucu</button>${H[id]?`<p class="text-sm text-amber-200 mt-1">${esc(q.hint)}</p>`:''}</div>`:''}
+ <div class="flex flex-wrap gap-2 pt-3 border-t border-slate-700 text-sm">
+  <button onclick="share('${id}')" class="btn !py-1.5 bg-green-600/20 text-green-400 hover:bg-green-600/30"><i class="fa-brands fa-whatsapp"></i> WhatsApp'ta Paylaş</button>
+  ${own||admin?`<button onclick="qModal('${id}')" class="btn !py-1.5 bg-slate-700 hover:bg-slate-600" title="Düzenle"><i class="fa-solid fa-pen"></i></button><button onclick="delQ('${id}')" class="btn !py-1.5 bg-rose-600/20 text-rose-400 hover:bg-rose-600/30" title="Sil"><i class="fa-solid fa-trash"></i></button>`:''}
+ </div></article>`;
+}
+function renderB(){
+ $('bd').innerHTML=S.length?`<div class="bg-slate-800 border border-slate-700 rounded-2xl divide-y divide-slate-700">${S.map((s,i)=>`<div class="flex items-center gap-3 p-3 ${s.name===me?'bg-indigo-500/10':''}"><span class="w-8 text-center text-lg">${['🥇','🥈','🥉'][i]||i+1}</span><span class="flex-1 font-semibold truncate">${esc(s.name)}</span><span class="font-bold text-indigo-400">${s.score} puan</span></div>`).join('')}</div>`:empty('Henüz puan alan yok. İlk puanı sen kap!');
+}
+function renderAll(){renderH();renderBanner();renderQ();renderB()}
+function deepLink(){if(!dl)return;const e=$('q-'+dl);if(e){e.scrollIntoView({behavior:'smooth',block:'center'});e.classList.add('ring-2','ring-indigo-500');dl=null}}
+
+/* ---- Cevaplama ---- */
+async function ans(id,val){
+ const q=Q.find(x=>x.id===id);if(!q||!db)return;
+ if((q.solvedBy||[]).includes(me))return toast('Bu soruyu daha önce çözmüştün!','warn');
+ if(q.author===me)return toast('Kendi sorundan puan alamazsın','warn');
+ if(q.type==='open'&&!String(val).trim())return toast('Önce bir cevap yaz','warn');
+ const ok=q.type==='mc'?Number(val)===q.correct:String(q.answer).split('|').some(a=>norm(a)===norm(val));
+ if(!ok)return toast('Yanlış cevap, tekrar dene','err');
+ const qr=db.collection('questions').doc(id),sr=db.collection('scores').doc(me.replace(/\//g,'_'));
+ try{
+  const r=await db.runTransaction(async t=>{
+   const d=(await t.get(qr)).data();
+   if(!d)return 'gone';
+   if((d.solvedBy||[]).includes(me))return 'dup';
+   t.update(qr,{solvedBy:firebase.firestore.FieldValue.arrayUnion(me)});
+   t.set(sr,{name:me,score:firebase.firestore.FieldValue.increment(PTS)},{merge:true});
+   return 'ok';
+  });
+  if(r==='ok')toast(`Doğru! +${PTS} puan`);
+  else if(r==='dup')toast('Bu soruyu daha önce çözmüştün!','warn');
+  else toast('Bu soru artık yok','err');
+ }catch(e){toast('Hata: '+(e.code||e.message),'err')}
+}
+function share(id){
+ const u=location.origin+location.pathname+'?q='+id,ok=()=>toast('Soru linki kopyalandı, WhatsApp\'a yapıştırabilirsin');
+ const fb=()=>{const t=document.createElement('textarea');t.value=u;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();ok()};
+ navigator.clipboard?navigator.clipboard.writeText(u).then(ok,fb):fb();
+}
+
+/* ---- Soru ekle / düzenle ---- */
+function qModal(id){
+ if(!db)return toast('Önce Firebase ayarlarını yap','warn');
+ editId=id||null;
+ const q=id?Q.find(x=>x.id===id):{cat:CATS[0],type:'mc',options:['','','',''],correct:0};
+ openM(`<h2 class="text-xl font-bold mb-3">${id?'Soruyu Düzenle':'Soru Ekle'}</h2><div class="space-y-3">
+ <select id="qc" class="inp">${CATS.map(c=>`<option ${c===q.cat?'selected':''}>${c}</option>`).join('')}</select>
+ <textarea id="qt" rows="3" class="inp" placeholder="Soru metni">${esc(q.text)}</textarea>
+ <input id="qi" class="inp" placeholder="Görsel/GIF URL (isteğe bağlı)" value="${esc(q.img)}">
+ <select id="qy" class="inp" onchange="typeSw()"><option value="mc" ${q.type==='mc'?'selected':''}>Çoktan Seçmeli</option><option value="open" ${q.type==='open'?'selected':''}>Açık Uçlu</option></select>
+ <div id="qm"><p class="text-xs text-slate-400 mb-2">Doğru şıkkı soldaki daireyle seç.</p><div id="qo" class="space-y-2"></div><button onclick="addOpt()" class="text-indigo-400 text-sm mt-2"><i class="fa-solid fa-plus"></i> Şık ekle</button></div>
+ <div id="qa"><input id="qans" class="inp" placeholder="Doğru cevap (alternatifler için: a | b)" value="${esc(q.answer)}"></div>
+ <input id="qh" class="inp" placeholder="İpucu (isteğe bağlı)" value="${esc(q.hint)}">
+ <div class="flex gap-2"><button onclick="saveQ()" class="btn flex-1 bg-indigo-600 hover:bg-indigo-500">Kaydet</button><button onclick="closeM()" class="btn bg-slate-700">Vazgeç</button></div></div>`);
+ (q.options&&q.options.length?q.options:['','','','']).forEach((o,i)=>addOpt(o,i===q.correct));
+ typeSw();
+}
+function typeSw(){const m=$('qy').value==='mc';$('qm').classList.toggle('hidden',!m);$('qa').classList.toggle('hidden',m)}
+function addOpt(v='',c=false){
+ const o=$('qo');if(o.children.length>=6)return toast('En fazla 6 şık eklenebilir','warn');
+ const r=document.createElement('div');r.className='flex items-center gap-2';
+ r.innerHTML=`<input type="radio" name="qr" ${c?'checked':''} class="accent-indigo-500 w-4 h-4 shrink-0"><input class="inp" placeholder="Şık" value="${esc(v)}"><button onclick="if($('qo').children.length>2)this.parentNode.remove();else toast('En az 2 şık olmalı','warn')" class="text-rose-400 px-2" title="Şıkkı sil"><i class="fa-solid fa-xmark"></i></button>`;
+ o.appendChild(r);
+}
+async function saveQ(){
+ const text=$('qt').value.trim(),type=$('qy').value,img=$('qi').value.trim();
+ if(!text)return toast('Soru metni gerekli','warn');
+ if(img&&!/^https?:\/\//i.test(img))return toast('Görsel adresi http veya https ile başlamalı','warn');
+ const d={cat:$('qc').value,text,img,type,hint:$('qh').value.trim()};
+ if(type==='mc'){
+  const opts=[];let c=-1;
+  [...$('qo').children].forEach(r=>{const v=r.children[1].value.trim();if(!v)return;if(r.children[0].checked)c=opts.length;opts.push(v)});
+  if(opts.length<2)return toast('En az 2 dolu şık gerekli','warn');
+  if(c<0)return toast('Doğru şıkkı seç','warn');
+  Object.assign(d,{options:opts,correct:c,answer:''});
+ }else{
+  d.answer=$('qans').value.trim();if(!d.answer)return toast('Doğru cevabı yaz','warn');
+  Object.assign(d,{options:[],correct:-1});
+ }
+ try{
+  if(editId)await db.collection('questions').doc(editId).update(d);
+  else await db.collection('questions').add({...d,author:me,solvedBy:[],createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+  closeM();toast('Soru kaydedildi');
+ }catch(e){toast('Hata: '+(e.code||e.message),'err')}
+}
+async function delQ(id){if(!confirm('Bu soru silinsin mi?'))return;try{await db.collection('questions').doc(id).delete();toast('Soru silindi')}catch(e){toast('Hata: '+(e.code||e.message),'err')}}
+
+/* ---- Yönetici ---- */
+function adminLogin(){
+ if(admin)return adminPanel();
+ openM(`<h2 class="text-xl font-bold mb-3">Yönetici Girişi</h2><input id="ap" type="password" class="inp mb-3" placeholder="Şifre" onkeydown="if(event.key==='Enter')adminCheck()"><button onclick="adminCheck()" class="btn w-full bg-indigo-600 hover:bg-indigo-500">Giriş yap</button>`);
+ setTimeout(()=>$('ap').focus(),50);
+}
+function adminCheck(){if($('ap').value===ADMIN_PW){admin=true;sessionStorage.setItem('gq_admin','1');renderAll();adminPanel()}else toast('Şifre hatalı','err')}
+function adminPanel(){
+ openM(`<div class="flex justify-between items-center mb-3"><h2 class="text-xl font-bold"><i class="fa-solid fa-shield-halved text-emerald-400"></i> Yönetici Paneli</h2><button onclick="closeM()" class="text-slate-400 px-2"><i class="fa-solid fa-xmark"></i></button></div>
+ <div class="space-y-5 text-sm">
+ <div class="space-y-2"><b>Turnuva başlat</b><input id="tt" class="inp" placeholder="Turnuva başlığı"><input id="tm" type="number" min="1" class="inp" placeholder="Süre (dakika)"><div class="flex gap-2"><button onclick="startT()" class="btn flex-1 bg-amber-600 hover:bg-amber-500">Turnuvayı başlat</button><button onclick="endT()" class="btn bg-slate-700">Bitir</button></div></div>
+ <div class="space-y-2"><b>Duyuru panosu</b><textarea id="at" rows="2" class="inp" placeholder="Tüm kullanıcılara görünecek duyuru">${esc(ann)}</textarea><div class="flex gap-2"><button onclick="setAnn(1)" class="btn flex-1 bg-indigo-600 hover:bg-indigo-500">Duyuruyu yayınla</button><button onclick="setAnn(0)" class="btn bg-slate-700">Kaldır</button></div></div>
+ <button onclick="resetAll()" class="btn w-full bg-rose-600/20 text-rose-400 border border-rose-600/40 hover:bg-rose-600/30"><i class="fa-solid fa-rotate-left"></i> Tüm puanları sıfırla</button>
+ <button onclick="admin=false;sessionStorage.removeItem('gq_admin');closeM();renderAll()" class="text-slate-400 w-full">Yönetici oturumunu kapat</button></div>`);
+}
+async function run(p,m){try{await p;toast(m)}catch(e){toast('Hata: '+(e.code||e.message||e),'err')}}
+const meta=(n,d)=>db?db.collection('meta').doc(n).set(d):Promise.reject('Firebase ayarı yok');
+function startT(){const t=$('tt').value.trim(),m=+$('tm').value;if(!t||!(m>0))return toast('Başlık ve süre gir','warn');run(meta('tournament',{title:t,active:true,endsAt:Date.now()+m*6e4}),'Turnuva başladı')}
+function endT(){run(meta('tournament',{active:false}),'Turnuva bitirildi')}
+function setAnn(on){run(meta('announcement',{text:on?$('at').value.trim():''}),on?'Duyuru yayınlandı':'Duyuru kaldırıldı')}
+async function resetAll(){
+ if(!db||!confirm('Tüm puanlar sıfırlansın ve herkes soruları yeniden çözebilsin mi? Bu işlem geri alınamaz.'))return;
+ try{
+  const [s,q]=await Promise.all([db.collection('scores').get(),db.collection('questions').get()]);
+  const ops=[...s.docs.map(d=>b=>b.delete(d.ref)),...q.docs.map(d=>b=>b.update(d.ref,{solvedBy:[]}))];
+  for(let i=0;i<ops.length;i+=400){const b=db.batch();ops.slice(i,i+400).forEach(f=>f(b));await b.commit()}
+  toast('Tüm puanlar sıfırlandı');
+ }catch(e){toast('Hata: '+(e.code||e.message),'err')}
+}
+
+/* ---- Başlat ---- */
+setTab('q');initFb();renderAll();if(!me)nameModal();
+</script>
+</body>
+</html>
